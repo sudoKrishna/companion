@@ -3,6 +3,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import AssistantOrb, { type OrbStatus } from "./components/AssistantOrb";
 import ChatBox, { type ChatMessage } from "./components/ChatBox";
+import { invoke } from "@tauri-apps/api/core";
+
 
 
 const DRAG_THRESHOLD_PX = 4;
@@ -14,13 +16,52 @@ export default function App() {
   const [mode, setMode] = useState<"orb" | "chat">("orb");
   const [isDragging, setIsDragging] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [isThinking, setIsThinking] = useState(false);
   const startPos = useRef<{ x: number; y: number } | null>(null);
   const didDrag = useRef(false);
+
+  async function handleSubmit(content: string) {
+    const userMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content,
+      createdAt: new Date(),
+    };
+    setMessages((prev) => [...prev, userMsg]);
+    setIsThinking(true);
+
+    try {
+      const history = [...messages, userMsg].map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+
+      const reply = await invoke<string>("send_message", { history });
+
+      const assistantMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: reply,
+        createdAt: new Date(),
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
+    } catch (error) {
+      const errorMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: `Error ${String(error)}`,
+        createdAt: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMsg])
+    } finally {
+      setIsThinking(false)
+    }
+  }
 
   async function expand() {
     const win = getCurrentWindow();
     const currentPos = await win.outerPosition();
-    const scaleFactor  = await win.scaleFactor();
+    const scaleFactor = await win.scaleFactor();
 
     const logicalX = currentPos.x / scaleFactor;
     const logicalY = currentPos.y / scaleFactor;
@@ -36,19 +77,19 @@ export default function App() {
 
 
   async function collapse() {
-   const win  = getCurrentWindow();
-   const currentPos = await win.outerPosition();
-   const scaleFactor = await win.scaleFactor();
+    const win = getCurrentWindow();
+    const currentPos = await win.outerPosition();
+    const scaleFactor = await win.scaleFactor();
 
-   const logicalX = currentPos.x / scaleFactor;
-   const logicalY = currentPos.y / scaleFactor;
+    const logicalX = currentPos.x / scaleFactor;
+    const logicalY = currentPos.y / scaleFactor;
 
-   const newX = logicalX + (CHAT_SIZE.width - ORB_SIZE.width);
-   const newY = logicalY + (CHAT_SIZE.height - ORB_SIZE.height);
+    const newX = logicalX + (CHAT_SIZE.width - ORB_SIZE.width);
+    const newY = logicalY + (CHAT_SIZE.height - ORB_SIZE.height);
 
-   setMode("orb");
-   await win.setSize(ORB_SIZE);
-   await win.setPosition(new LogicalPosition(newX, newY));
+    setMode("orb");
+    await win.setSize(ORB_SIZE);
+    await win.setPosition(new LogicalPosition(newX, newY));
   }
 
   function handleOrbMouseDown(e: React.MouseEvent) {
@@ -94,25 +135,24 @@ export default function App() {
         tabIndex={-1}
         ref={(el) => el?.focus()}
       >
+        <button
+          onClick={async () => {
+            try {
+              const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+              console.log("Mic access granted. Tracks:", stream.getAudioTracks());
+              stream.getTracks().forEach((t) => t.stop()); // release the mic right away, this is just a test
+            } catch (err) {
+              console.error("Mic access failed:", err);
+            }
+          }}
+          className="absolute top-2 left-2 z-50 rounded bg-white/10 px-2 py-1 text-xs text-white"
+        >
+          Test Mic
+        </button>
         <ChatBox
           messages={messages}
           isThinking={false}
-          onSubmit={(content) => {
-            // Placeholder echo response — replaced by real AI in Phase 3.
-            const userMsg: ChatMessage = {
-              id: crypto.randomUUID(),
-              role: "user",
-              content,
-              createdAt: new Date(),
-            };
-            const assistantMsg: ChatMessage = {
-              id: crypto.randomUUID(),
-              role: "assistant",
-              content: `(placeholder) You said: ${content}`,
-              createdAt: new Date(),
-            };
-            setMessages((prev) => [...prev, userMsg, assistantMsg]);
-          }}
+          onSubmit={handleSubmit}
         />
       </div>
     );
