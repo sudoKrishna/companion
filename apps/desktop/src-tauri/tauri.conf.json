@@ -11,19 +11,34 @@
   },
   "app": {
     "windows": [
-  {
-    "label": "main",
-    "title": "Companion",
-    "width": 90,
-    "height": 90,
-    "resizable": false,
-    "fullscreen": false,
-    "decorations": false,
-    "transparent": true,
-    "alwaysOnTop": true,
-    "skipTaskbar": true
-  }
-],
+      {
+        "label": "orb",
+        "url": "index.html",
+        "width": 72,
+        "height": 72,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "focus": false
+      },
+      {
+        "label": "main",
+        "title": "Companion",
+        "url": "index.html",
+        "width": 940,
+        "height": 660,
+        "minWidth": 720,
+        "minHeight": 520,
+        "resizable": true,
+        "decorations": true,
+        "transparent": false,
+        "center": true,
+        "visible": false
+      }
+    ],
     "security": {
       "csp": null
     }

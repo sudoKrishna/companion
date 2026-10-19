@@ -3,10 +3,18 @@
   "identifier": "default",
   "description": "enables the default permissions",
   "windows": [
+    "orb",
     "main"
   ],
   "permissions": [
     "core:default",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-unminimize",
+    "core:event:allow-emit",
+    "core:event:allow-listen",
+    "autostart:default"
   ]
 }
