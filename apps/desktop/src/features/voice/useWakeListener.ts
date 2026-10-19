@@ -7,7 +7,10 @@ const POLL_MS = 50;
 /** Speech must stand this far above the measured room noise. */
 const SPEECH_OVER_FLOOR = 4;
 const MIN_SPEECH_RMS = 0.008;
-const FLOOR_SMOOTHING = 0.95;
+/** How fast the floor rises toward a louder sustained level (per tick). */
+const FLOOR_RISE_RATE = 0.02;
+/** How fast it snaps down when the room gets quieter (per tick). */
+const FLOOR_FALL_RATE = 0.3;
 const SILENCE_HOLD_MS = 1200;
 const MIN_SEGMENT_MS = 400;
 const CLICK_GRACE_MS = 4000;
@@ -177,8 +180,11 @@ export function useWakeListener({ enabled, phrases, onUtterance }: Options) {
       starting = true;
 
       try {
+        const deviceId = await pickMicrophone();
+
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
+            ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
             echoCancellation: false,
             noiseSuppression: false,
             autoGainControl: false,
@@ -234,6 +240,7 @@ export function useWakeListener({ enabled, phrases, onUtterance }: Options) {
           const rms = frameRms(samples);
           const threshold = speechThreshold(noiseFloor);
           const isSpeech = rms > threshold;
+          noiseFloor = updatedNoiseFloor(noiseFloor, rms);
 
           if (++heartbeat % 10 === 0) {
             void fetch("http://127.0.0.1:4000/diag", {
@@ -252,7 +259,6 @@ export function useWakeListener({ enabled, phrases, onUtterance }: Options) {
 
           if (segmentStart === null) {
             if (!isSpeech && !captureRequested.current) {
-              noiseFloor = updatedNoiseFloor(noiseFloor, rms);
               return;
             }
 
@@ -299,6 +305,16 @@ export function useWakeListener({ enabled, phrases, onUtterance }: Options) {
       },
     };
 
+    // A headset plugged or unplugged mid-session should take over immediately,
+    // rather than waiting for the next time listening is toggled off and on.
+    function handleDeviceChange() {
+      if (cancelled || !enabled || starting || segmentStart !== null) return;
+      tearDown();
+      void arm({ forceCapture: false, asOneShot: false });
+    }
+
+    navigator.mediaDevices.addEventListener?.("devicechange", handleDeviceChange);
+
     if (enabled) {
       void arm({ forceCapture: false, asOneShot: false });
     } else {
@@ -308,6 +324,7 @@ export function useWakeListener({ enabled, phrases, onUtterance }: Options) {
     return () => {
       cancelled = true;
       runtime.current = null;
+      navigator.mediaDevices.removeEventListener?.("devicechange", handleDeviceChange);
       tearDown();
     };
   }, [enabled]);
@@ -345,8 +362,15 @@ export function speechThreshold(noiseFloor: number): number {
   return Math.max(noiseFloor * SPEECH_OVER_FLOOR, MIN_SPEECH_RMS);
 }
 
+/**
+ * Tracks the ambient noise level even while speech is ongoing, so a loud but
+ * steady room doesn't get stuck reading as permanent speech: it snaps down
+ * fast when things get quieter, and only creeps up slowly otherwise — a real
+ * voice is a brief spike well above this, not a sustained rise in it.
+ */
 export function updatedNoiseFloor(noiseFloor: number, rms: number): number {
-  return noiseFloor * FLOOR_SMOOTHING + rms * (1 - FLOOR_SMOOTHING);
+  const rate = rms < noiseFloor ? FLOOR_FALL_RATE : FLOOR_RISE_RATE;
+  return noiseFloor + (rms - noiseFloor) * rate;
 }
 
 export function wakePrompt(text: string, phrases: string[], forced: boolean): string | null {
@@ -367,6 +391,29 @@ export function wakePrompt(text: string, phrases: string[], forced: boolean): st
   }
 
   return null;
+}
+
+const BUILT_IN_MIC_PATTERN = /\b(built-?in|internal|mic ?1|laptop)\b/i;
+
+/**
+ * Prefers a plugged-in headset/headphone mic over the laptop's built-in one.
+ * Falls back to the system default (no deviceId constraint) if nothing better
+ * is plugged in, or if device labels aren't available yet.
+ */
+export async function pickMicrophone(): Promise<string | undefined> {
+  if (!navigator.mediaDevices?.enumerateDevices) return undefined;
+
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const mics = devices.filter((device) => device.kind === "audioinput" && device.label);
+
+  void fetch("http://127.0.0.1:4000/diag", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mics: mics.map((mic) => mic.label) }),
+  }).catch(() => undefined);
+
+  const external = mics.find((device) => !BUILT_IN_MIC_PATTERN.test(device.label));
+  return external?.deviceId;
 }
 
 function pickMimeType() {
