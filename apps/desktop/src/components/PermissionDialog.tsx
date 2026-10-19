@@ -74,16 +74,16 @@ export default function PermissionDialog({
   const risk = riskStyles[request.risk];
 
   return (
-    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/65 p-4 backdrop-blur-md">
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/65 p-2 backdrop-blur-md">
       <section
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="permission-title"
         aria-describedby="permission-description"
-        className="w-full max-w-md overflow-hidden rounded-3xl border border-white/10 bg-[#15151b] text-zinc-100 shadow-2xl shadow-black/50"
+        className="flex max-h-full w-full max-w-md flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#15151b] text-zinc-100 shadow-2xl shadow-black/50"
       >
         {/* Header */}
-        <header className="flex items-start justify-between border-b border-white/[0.07] px-5 py-4">
+        <header className="flex shrink-0 items-start justify-between border-b border-white/[0.07] px-4 py-3">
           <div className="flex items-center gap-3">
             <div className="grid size-10 shrink-0 place-items-center rounded-xl border border-violet-300/15 bg-violet-400/10 text-violet-300">
               <svg
@@ -122,13 +122,13 @@ export default function PermissionDialog({
         </header>
 
         {/* Action details */}
-        <div className="space-y-4 p-5">
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
           <div>
             <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
               Requested action
             </p>
 
-            <h3 className="text-base font-semibold text-white">
+            <h3 className="text-sm font-semibold text-white">
               {request.action}
             </h3>
 
@@ -145,7 +145,7 @@ export default function PermissionDialog({
               <p className="mb-1 text-[10px] uppercase tracking-wider text-zinc-500">
                 Target
               </p>
-              <p className="break-all text-xs leading-5 text-zinc-300">
+              <p className="max-h-28 overflow-y-auto whitespace-pre-wrap break-all text-xs leading-5 text-zinc-300">
                 {request.target}
               </p>
             </div>
@@ -169,7 +169,7 @@ export default function PermissionDialog({
         </div>
 
         {/* Explicit decision */}
-        <footer className="border-t border-white/[0.07] p-4">
+        <footer className="shrink-0 border-t border-white/[0.07] p-3">
           <div className="flex gap-2.5">
             <button
               ref={rejectButtonRef}
