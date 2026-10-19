@@ -1,0 +1,36 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Fact {
+  id        String   @id @default(uuid())
+  content   String
+  createdAt DateTime @default(now())
+}
+
+model Message {
+  id             String   @id @default(uuid())
+  conversationId String
+  role           String
+  content        String
+  createdAt      DateTime @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+model ToolAudit {
+  id        String   @id @default(uuid())
+  toolName  String
+  input     String
+  decision  String
+  createdAt DateTime @default(now())
+}
+
+model Preference {
+  id    Int    @id @default(1)
+  value Json
+}
