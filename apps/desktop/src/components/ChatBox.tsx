@@ -1,5 +1,8 @@
 
 import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
   useRef,
   useState,
   type FormEvent,
@@ -8,30 +11,54 @@ import {
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "tool";
   content: string;
   createdAt: Date;
+  toolName?: string;
+  toolOutput?: string;
+  imageBase64?: string;
+}
+
+export interface ChatBoxHandle {
+  insertText: (text: string) => void;
 }
 
 interface ChatBoxProps {
   messages: ChatMessage[];
   onSubmit: (message: string) => void | Promise<void>;
   onVoiceClick?: () => void;
+  onOpenSettings?: () => void;
+  onNewConversation?: () => void;
+  voiceState?: "idle" | "recording" | "processing";
   isThinking?: boolean;
   placeholder?: string;
 }
 
-export default function ChatBox({
+const ChatBox = forwardRef<ChatBoxHandle, ChatBoxProps>(function ChatBox({
   messages,
   onSubmit,
   onVoiceClick,
+  onOpenSettings,
+  onNewConversation,
+  voiceState = "idle",
   isThinking = false,
   placeholder = "Message your companion...",
-}: ChatBoxProps) {
+}, ref) {
   const [value, setValue] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages.length, isThinking]);
+
+  useImperativeHandle(ref, () => ({
+    insertText(text: string) {
+      setValue((prev) => (prev ? `${prev} ${text}` : text));
+      textareaRef.current?.focus();
+    },
+  }));
 
   async function handleSubmit(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
@@ -110,27 +137,51 @@ export default function ChatBox({
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            setValue("");
-            textareaRef.current?.focus();
-          }}
-          className="grid size-8 place-items-center rounded-xl text-zinc-500 transition hover:bg-white/[0.06] hover:text-zinc-200"
-          aria-label="Focus message input"
-          title="New message"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            className="size-4"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.7"
-            aria-hidden="true"
+        <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => {
+              setValue("");
+              onNewConversation?.();
+              textareaRef.current?.focus();
+            }}
+            className="grid size-8 place-items-center rounded-xl text-zinc-500 transition hover:bg-white/[0.06] hover:text-zinc-200"
+            aria-label="New conversation"
+            title="New conversation"
           >
-            <path d="M12 5v14M5 12h14" />
-          </svg>
-        </button>
+            <svg
+              viewBox="0 0 24 24"
+              className="size-4"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              aria-hidden="true"
+            >
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            disabled={!onOpenSettings}
+            className="grid size-8 place-items-center rounded-xl text-zinc-500 transition hover:bg-white/[0.06] hover:text-zinc-200 disabled:opacity-40"
+            aria-label="Settings"
+            title="Settings"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              className="size-4"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7.1 19.7l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 15H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 3.1V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0 1.2 2.9H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" />
+            </svg>
+          </button>
+        </div>
       </header>
 
       {/* Conversation */}
@@ -177,7 +228,10 @@ export default function ChatBox({
             </div>
           </div>
         ) : (
-          messages.map((message) => (
+          messages.map((message) =>
+            message.role === "tool" ? (
+              <ToolTrace key={message.id} message={message} />
+            ) : (
             <article
               key={message.id}
               className={`flex w-full gap-2.5 ${
@@ -206,7 +260,8 @@ export default function ChatBox({
                 </time>
               </div>
             </article>
-          ))
+            ),
+          )
         )}
 
         {isThinking && (
@@ -249,10 +304,23 @@ export default function ChatBox({
               <button
                 type="button"
                 onClick={onVoiceClick}
-                disabled={!onVoiceClick}
-                aria-label="Voice input"
-                title={onVoiceClick ? "Voice input" : "Voice input not connected yet"}
-                className="grid size-8 place-items-center rounded-xl text-zinc-500 transition hover:bg-white/[0.06] hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-40"
+                disabled={!onVoiceClick || voiceState === "processing"}
+                aria-label={voiceState === "recording" ? "Stop recording" : "Voice input"}
+                aria-pressed={voiceState === "recording"}
+                title={
+                  voiceState === "recording"
+                    ? "Stop recording"
+                    : voiceState === "processing"
+                      ? "Transcribing..."
+                      : "Voice input"
+                }
+                className={`grid size-8 place-items-center rounded-xl transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                  voiceState === "recording"
+                    ? "animate-pulse bg-red-500/20 text-red-400"
+                    : voiceState === "processing"
+                      ? "bg-white/[0.06] text-violet-300"
+                      : "text-zinc-500 hover:bg-white/[0.06] hover:text-zinc-200"
+                }`}
               >
                 <svg
                   viewBox="0 0 24 24"
@@ -270,7 +338,7 @@ export default function ChatBox({
               </button>
 
               <span className="pl-1 text-[10px] text-zinc-600">
-                Enter to send · Shift + Enter for newline
+                Enter to send
               </span>
             </div>
 
@@ -305,5 +373,52 @@ export default function ChatBox({
         </p>
       </div>
     </section>
+  );
+});
+
+export default ChatBox;
+
+function ToolTrace({ message }: { message: ChatMessage }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const denied = message.content.startsWith("Denied:");
+  const failed = message.content.endsWith("failed");
+
+  return (
+    <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-3 py-2">
+      <button
+        type="button"
+        onClick={() => setIsOpen((open) => !open)}
+        className="flex w-full items-center gap-2 text-left"
+      >
+        <span
+          className={`size-1.5 shrink-0 rounded-full ${
+            denied ? "bg-red-400" : failed ? "bg-amber-400" : "bg-emerald-400"
+          }`}
+        />
+        <span className="flex-1 truncate text-[11px] text-zinc-400">
+          {message.content}
+        </span>
+        {(message.toolOutput || message.imageBase64) && (
+          <span className="text-[10px] text-zinc-600">{isOpen ? "hide" : "details"}</span>
+        )}
+      </button>
+
+      {isOpen && (
+        <div className="mt-2 space-y-2">
+          {message.imageBase64 && (
+            <img
+              src={`data:image/png;base64,${message.imageBase64}`}
+              alt="Screen capture"
+              className="max-h-40 w-full rounded-lg border border-white/[0.07] object-contain"
+            />
+          )}
+          {message.toolOutput && (
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/40 p-2 text-[10px] leading-4 text-zinc-400">
+              {message.toolOutput}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
