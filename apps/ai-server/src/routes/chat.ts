@@ -25,19 +25,20 @@ chatRouter.post("/chat", async (req, res) => {
             [{ role: "system", content: await systemPrompt() }, ...history],
             enableTools,
         );
+        const reply = textContent(message.content);
 
         if (conversationId) {
             const lastTurn = history[history.length - 1];
             if (lastTurn?.role === "user" && typeof lastTurn.content === "string") {
                 await addMessage(conversationId, "user", lastTurn.content);
             }
-            if (message.content) {
-                await addMessage(conversationId, "assistant", message.content);
+            if (reply) {
+                await addMessage(conversationId, "assistant", reply);
             }
         }
 
         res.json({
-            reply: message.content ?? "",
+            reply,
             assistantMessage: message,
             toolCalls: (message.tool_calls ?? []).map((call) => ({
                 id: call.id,
@@ -82,9 +83,18 @@ chatRouter.post("/suggest", async (req, res) => {
             false,
         );
 
-        const text = (message.content ?? "").trim();
+        const text = textContent(message.content).trim();
         res.json({ suggestion: text === "NONE" || text === "" ? null : text });
     } catch (error) {
         res.status(500).json({ error: String(error) });
     }
 });
+
+function textContent(content: import("../deepseek").ChatMessage["content"]): string {
+    if (typeof content === "string") return content;
+    if (!content) return "";
+    return content
+        .filter((part): part is { type: "text"; text: string } => part.type === "text")
+        .map((part) => part.text)
+        .join("\n");
+}
