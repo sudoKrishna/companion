@@ -10,28 +10,33 @@ const MIN_SPEECH_RMS = 0.008;
 const FLOOR_SMOOTHING = 0.95;
 const SILENCE_HOLD_MS = 1200;
 const MIN_SEGMENT_MS = 400;
+const CLICK_GRACE_MS = 4000;
 /** Frames above the threshold before a segment is worth uploading. */
 const MIN_SPEECH_FRAMES = 8;
 const MAX_SEGMENT_MS = 15_000;
+const MIN_FORCED_SEGMENT_MS = 1500;
 /** Chunk length of the always-running recorder. */
 const CHUNK_MS = 250;
 /** Chunks kept before speech was noticed, so the wake phrase is never clipped. */
 const PREROLL_CHUNKS = 4;
 
 interface Options {
+  /** Continuous wake-phrase listening. Click-to-talk works either way. */
   enabled: boolean;
   phrases: string[];
   onUtterance: (text: string) => void;
 }
 
 /**
- * Keeps the microphone open and the recorder running continuously, watching the
- * level locally. Only the stretches that contain speech are uploaded, and a
- * segment is forwarded when it carries one of the wake phrases — or when the orb
- * was clicked to capture directly.
+ * Microphone listener for the orb.
  *
- * The recorder never stops, so each segment keeps a few chunks of pre-roll and
- * the opening words of the wake phrase survive.
+ * - Click (`captureNow`): always starts a listen session immediately (no wake
+ *   phrase needed). Mic opens on demand if it was off.
+ * - Always-listening (`enabled`): keeps the mic open and only forwards speech
+ *   that contains a wake phrase (unless a click forced the segment).
+ *
+ * After a click-only session finishes, the mic is released again when
+ * always-listening is off.
  */
 export function useWakeListener({ enabled, phrases, onUtterance }: Options) {
   const [state, setState] = useState<ListenerState>("off");
@@ -40,20 +45,27 @@ export function useWakeListener({ enabled, phrases, onUtterance }: Options) {
 
   const forced = useRef(false);
   const captureRequested = useRef(false);
+  /** True while a one-shot click session is active (mic not continuously armed). */
+  const oneShot = useRef(false);
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
+
   const callbacks = useRef({ phrases, onUtterance });
   callbacks.current = { phrases, onUtterance };
 
-  useEffect(() => {
-    if (!enabled) {
-      setState("off");
-      return;
-    }
+  // Runtime handles so captureNow can start a session when the effect is idle.
+  const runtime = useRef<{
+    startOneShot: () => void;
+    requestCapture: () => void;
+  } | null>(null);
 
+  useEffect(() => {
     let stream: MediaStream | null = null;
     let context: AudioContext | null = null;
     let recorder: MediaRecorder | null = null;
     let timer: ReturnType<typeof setInterval> | null = null;
     let cancelled = false;
+    let starting = false;
 
     // chunks[0] carries the container header and is always kept.
     let chunks: Blob[] = [];
@@ -62,11 +74,119 @@ export function useWakeListener({ enabled, phrases, onUtterance }: Options) {
     let silenceSince: number | null = null;
     let speechFrames = 0;
 
-    async function arm() {
+    function tearDown() {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+      if (recorder && recorder.state !== "inactive") {
+        try {
+          recorder.stop();
+        } catch {
+          /* already stopped */
+        }
+      }
+      recorder = null;
+      void context?.close();
+      context = null;
+      stream?.getTracks().forEach((track) => track.stop());
+      stream = null;
+      chunks = [];
+      segmentStart = null;
+      oneShot.current = false;
+      forced.current = false;
+      captureRequested.current = false;
+      if (!cancelled) setState("off");
+    }
+
+    async function closeSegment() {
+      if (segmentStart === null || !recorder) return;
+
+      const duration = Date.now() - segmentStartedAt;
+      const wasForced = forced.current;
+      const wasOneShot = oneShot.current;
+      const heardEnough = wasForced || speechFrames >= MIN_SPEECH_FRAMES;
+      const parts = [chunks[0]!, ...chunks.slice(segmentStart)];
+
+      segmentStart = null;
+      forced.current = false;
+      chunks = [chunks[0]!, ...chunks.slice(-PREROLL_CHUNKS)];
+
+      const minMs = wasForced || wasOneShot ? MIN_FORCED_SEGMENT_MS : MIN_SEGMENT_MS;
+      if (duration < minMs || !heardEnough) {
+        if (wasOneShot && !enabledRef.current) {
+          tearDown();
+        } else if (!cancelled) {
+          setState("armed");
+        }
+        return;
+      }
+
+      const blob = new Blob(parts, { type: recorder.mimeType });
+      if (blob.size === 0) {
+        if (wasOneShot && !enabledRef.current) {
+          tearDown();
+        } else if (!cancelled) {
+          setState("armed");
+        }
+        return;
+      }
+
+      setState("transcribing");
+
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const text = (await transcribe(blob)).trim();
+        if (text) setLastHeard(text);
+
+        // Click sessions always forward the full transcript (no wake phrase).
+        const prompt = wakePrompt(text, callbacks.current.phrases, wasForced || wasOneShot);
+
+        void fetch("http://127.0.0.1:4000/diag", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            heard: text,
+            forced: wasForced || wasOneShot,
+            seconds: Math.round(duration / 100) / 10,
+            bytes: blob.size,
+            forwarded: prompt,
+          }),
+        }).catch(() => undefined);
+
+        if (prompt) callbacks.current.onUtterance(prompt);
+      } catch (cause) {
+        console.error("Wake listener transcription failed:", cause);
+        setError(String(cause));
+      } finally {
+        if (cancelled) return;
+
+        // One-shot click: release the mic when always-listening is off.
+        if (wasOneShot && !enabledRef.current) {
+          tearDown();
+        } else {
+          oneShot.current = false;
+          setState("armed");
+        }
+      }
+    }
+    async function arm(opts: { forceCapture: boolean; asOneShot: boolean }) {
+      if (starting || stream) {
+        if (opts.forceCapture) captureRequested.current = true;
+        return;
+      }
+      starting = true;
+
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+          },
+        });
         if (cancelled) {
           stream.getTracks().forEach((track) => track.stop());
+          stream = null;
           return;
         }
 
@@ -95,14 +215,40 @@ export function useWakeListener({ enabled, phrases, onUtterance }: Options) {
 
         const samples = new Uint8Array(analyser.fftSize);
         let noiseFloor = 0.002;
-        setState("armed");
+        oneShot.current = opts.asOneShot;
         setError(null);
+
+        if (opts.forceCapture) {
+          // Wait one chunk so MediaRecorder has a header + some audio.
+          captureRequested.current = true;
+          setState("capturing");
+        } else {
+          setState("armed");
+        }
+
+        let heartbeat = 0;
 
         timer = setInterval(() => {
           analyser.getByteTimeDomainData(samples);
 
           const rms = frameRms(samples);
-          const isSpeech = rms > speechThreshold(noiseFloor);
+          const threshold = speechThreshold(noiseFloor);
+          const isSpeech = rms > threshold;
+
+          if (++heartbeat % 10 === 0) {
+            void fetch("http://127.0.0.1:4000/diag", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                tick: true,
+                rms: Math.round(rms * 10000) / 10000,
+                noiseFloor: Math.round(noiseFloor * 10000) / 10000,
+                threshold: Math.round(threshold * 10000) / 10000,
+                isSpeech,
+                hasSegment: segmentStart !== null,
+              }),
+            }).catch(() => undefined);
+          }
 
           if (segmentStart === null) {
             if (!isSpeech && !captureRequested.current) {
@@ -136,75 +282,51 @@ export function useWakeListener({ enabled, phrases, onUtterance }: Options) {
       } catch (cause) {
         setError(String(cause));
         setState("off");
-      }
-    }
-
-    async function closeSegment() {
-      if (segmentStart === null || !recorder) return;
-
-      const duration = Date.now() - segmentStartedAt;
-      const wasForced = forced.current;
-      const heardEnough = wasForced || speechFrames >= MIN_SPEECH_FRAMES;
-      const parts = [chunks[0]!, ...chunks.slice(segmentStart)];
-
-      segmentStart = null;
-      forced.current = false;
-      chunks = [chunks[0]!, ...chunks.slice(-PREROLL_CHUNKS)];
-
-      if (duration < MIN_SEGMENT_MS || !heardEnough) {
-        setState("armed");
-        return;
-      }
-
-      const blob = new Blob(parts, { type: recorder.mimeType });
-      if (blob.size === 0) {
-        setState("armed");
-        return;
-      }
-
-      setState("transcribing");
-
-      try {
-        const text = (await transcribe(blob)).trim();
-        if (text) setLastHeard(text);
-
-        const prompt = wakePrompt(text, callbacks.current.phrases, wasForced);
-
-        void fetch("http://127.0.0.1:4000/diag", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            heard: text,
-            forced: wasForced,
-            seconds: Math.round(duration / 100) / 10,
-            bytes: blob.size,
-            forwarded: prompt,
-          }),
-        }).catch(() => undefined);
-
-        if (prompt) callbacks.current.onUtterance(prompt);
-      } catch (cause) {
-        console.error("Wake listener transcription failed:", cause);
+        stream?.getTracks().forEach((track) => track.stop());
+        stream = null;
+        oneShot.current = false;
       } finally {
-        if (!cancelled) setState("armed");
+        starting = false;
       }
     }
 
-    void arm();
+    runtime.current = {
+      startOneShot: () => {
+        void arm({ forceCapture: true, asOneShot: true });
+      },
+      requestCapture: () => {
+        captureRequested.current = true;
+      },
+    };
+
+    if (enabled) {
+      void arm({ forceCapture: false, asOneShot: false });
+    } else {
+      setState("off");
+    }
 
     return () => {
       cancelled = true;
-      if (timer) clearInterval(timer);
-      if (recorder && recorder.state !== "inactive") recorder.stop();
-      void context?.close();
-      stream?.getTracks().forEach((track) => track.stop());
-      setState("off");
+      runtime.current = null;
+      tearDown();
     };
   }, [enabled]);
 
   const captureNow = useCallback(() => {
-    captureRequested.current = true;
-  }, []);
+    // Already in a continuous or one-shot session → force the next segment.
+    if (state === "armed" || state === "capturing") {
+      captureRequested.current = true;
+      runtime.current?.requestCapture();
+      return;
+    }
+
+    // Mic is off (always-listening disabled) → open mic and start listening now.
+    if (state === "off" || state === "transcribing") {
+      runtime.current?.startOneShot();
+      // If effect hasn't registered runtime yet, flag for when it does.
+      captureRequested.current = true;
+    }
+  }, [state]);
 
   return { state, error, lastHeard, captureNow };
 }

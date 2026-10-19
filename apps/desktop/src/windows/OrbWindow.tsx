@@ -66,12 +66,14 @@ export default function OrbWindow() {
     return () => void stop.then((unlisten) => unlisten());
   }, [preferences.speakReplies]);
 
+  // "armed" means the mic is open and waiting for the wake phrase — that should
+  // still read as listening, not drop back to idle between utterances.
   const status: OrbStatus = isSpeaking
     ? "speaking"
-    : listener.state === "capturing"
-      ? "listening"
-      : brain.isThinking || listener.state === "transcribing"
-        ? "thinking"
+    : brain.isThinking || listener.state === "transcribing"
+      ? "thinking"
+      : listener.state === "capturing" || listener.state === "armed"
+        ? "listening"
         : "idle";
 
   async function openDashboard() {
@@ -110,7 +112,7 @@ export default function OrbWindow() {
     window.addEventListener("mouseup", handleMouseUp);
   }
 
-  const armed = listener.state !== "off";
+  const alwaysOn = preferences.alwaysListening;
 
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-transparent">
@@ -121,10 +123,11 @@ export default function OrbWindow() {
           void openDashboard();
         }}
         title={[
-          armed
-            ? `Listening for "${preferences.wakePhrases[0] ?? "your wake phrase"}"`
-            : "Always-listening is off",
-          "Click to talk now · right-click for the dashboard",
+          alwaysOn
+            ? `Always listening for "${preferences.wakePhrases[0] ?? "your wake phrase"}"`
+            : "Click the orb to talk",
+          "Click to start listening · right-click for the dashboard",
+          listener.error ? `Mic error: ${listener.error}` : null,
           listener.lastHeard ? `Last heard: "${listener.lastHeard}"` : null,
         ]
           .filter(Boolean)
@@ -138,7 +141,7 @@ export default function OrbWindow() {
           }}
         />
 
-        {armed && status === "idle" && (
+        {alwaysOn && status === "idle" && (
           <span
             aria-hidden="true"
             className="pointer-events-none absolute inset-0 rounded-full ring-1 ring-violet-400/30"

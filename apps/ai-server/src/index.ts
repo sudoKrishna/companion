@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { chatRouter } from "./routes/chat";
 import { voiceRouter } from "./routes/voice";
 import { toolsRouter } from "./routes/tools";
@@ -19,8 +20,13 @@ app.use(memoryRouter);
 app.use("/tools/execute", toolsRouter);
 app.use("/preferences", preferencesRouter);
 
+const diagLogPath = `${process.env.HOME}/.companion/diag.log`;
+mkdirSync(`${process.env.HOME}/.companion`, { recursive: true });
+
 app.post("/diag", (req, res) => {
+    const line = `${new Date().toISOString()} ${JSON.stringify(req.body)}\n`;
     console.log("[diag]", JSON.stringify(req.body));
+    appendFileSync(diagLogPath, line);
     res.json({ ok: true });
 });
 
